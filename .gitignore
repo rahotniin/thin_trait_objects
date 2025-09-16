@@ -1,0 +1,7 @@
+/target
+/.idea
+Cargo.lock
+
+/thin_trait_objects_macros/target
+/thin_trait_objects_macros/.idea
+/thin_trait_objects_macros/Cargo.lock

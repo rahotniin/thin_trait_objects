@@ -1,0 +1,7 @@
+[package]
+name = "thin_trait_objects"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+thin_trait_objects_macros = { path = "./thin_trait_objects_macros" }
