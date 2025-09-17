@@ -3,13 +3,17 @@ use proc_macro2::TokenStream as TokenStream2;
 use syn::{parse_macro_input, parse_quote, FnArg, Ident, ItemTrait, Pat, TraitItemFn, Type, TypeReference};
 use quote::quote;
 
+// helper for parsing a functions in a trait definition
 fn process_trait_item_fn(trait_name: Ident, item_fn: TraitItemFn) -> (Ident, TokenStream2, TokenStream2, TokenStream2) {
     let fn_name = item_fn.sig.ident;
     let return_type = item_fn.sig.output;
 
-    let args = item_fn.sig.inputs.iter();
+    let args = item_fn.sig.inputs.into_iter().collect::<Vec<_>>();
 
-    let non_self_args = args.clone().skip(1);
+    let receiver = args.get(0).expect(format!("function {}::{} must have a receiver", trait_name, fn_name).as_str());
+
+
+    let non_self_args = args.iter().skip(1);
     let mut arg_names = Vec::new();
     let mut arg_types = Vec::<Type>::new();
     let mut arg_convs = Vec::new();
@@ -64,7 +68,7 @@ fn process_trait_item_fn(trait_name: Ident, item_fn: TraitItemFn) -> (Ident, Tok
 
     let trait_fn_impl = quote! {
         fn #fn_name(#(#args),*) #return_type {
-            let vtable = unsafe { &*(self.ptr as *mut VTable) };
+            let vtable = unsafe { &*(self.ptr as *const VTable) };
             (vtable.#fn_name)(self.ptr, #(#arg_names),*)
         }
     };
@@ -103,6 +107,8 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     quote! {
         #item_trait
 
+
+
         const _: () = {
             #[repr(C)]
             struct VTable {
@@ -128,8 +134,8 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             #(#wrappers)*
 
-            impl<T: #trait_name> IntoThin<dyn #trait_name> for T {
-                fn into_thin(self) -> Thin<dyn #trait_name> {
+            impl<T: #trait_name> ThinExt<dyn #trait_name, T> for Thin<dyn #trait_name> {
+                fn new(value: T) -> Thin<dyn #trait_name> {
                     let vtable = VTable {
                         drop: drop::<T>,
                         #(#fn_names: #fn_names::<T>,)*
@@ -137,7 +143,7 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     let bundle = Bundle {
                         vtable,
-                        value: self,
+                        value,
                     };
 
                     let ptr = Box::into_raw(Box::new(bundle)) as *mut ();

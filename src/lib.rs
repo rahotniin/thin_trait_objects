@@ -43,23 +43,18 @@ pub use thin_trait_objects_macros::thin;
 #[repr(transparent)]
 pub struct Thin<T: ?Sized> {
     // type-erased `*mut Bundle`
-    ptr: *mut (),
+    pub ptr: *mut (),
     phantom: PhantomData<T>,
-}
-
-/// Helper trait for implementing `Thin::new`.
-pub trait IntoThin<T: ?Sized> {
-    fn into_thin(self) -> Thin<T>;
 }
 
 impl<T: ?Sized> Thin<T> {
     pub unsafe fn from_raw(ptr: *mut ()) -> Thin<T> {
         Thin { ptr, phantom: PhantomData }
     }
+}
 
-    pub fn new<K: IntoThin<T>>(val: K) -> Thin<T> {
-        val.into_thin()
-    }
+pub trait ThinExt<T: ?Sized, K> {
+    fn new(val: K) -> Thin<T>;
 }
 
 impl<T: ?Sized> Drop for Thin<T> {
@@ -136,7 +131,7 @@ mod template_impl {
         #[repr(C)]
         struct VTable {
             // drop MUST be the first field
-            // so it can be accessed simply by casting a `VTable` pointer
+            // see the `Drop` impl of `Thin`
             drop: extern "C" fn(*mut ()),
             foo:  extern "C" fn(*mut ()),
             bar:  extern "C" fn(*mut ()),
@@ -153,13 +148,13 @@ mod template_impl {
         }
 
         extern "C" fn foo<T: Foo>(ptr: *mut ()) {
-            let bundle = unsafe { &mut *(ptr as *mut Bundle<T>) };
-            T::foo(&mut bundle.val);
+            let bundle = unsafe { &*(ptr as *const Bundle<T>) };
+            T::foo(&bundle.value)
         }
 
         extern "C" fn bar<T: Foo>(ptr: *mut ()) {
             let bundle = unsafe { &mut *(ptr as *mut Bundle<T>) };
-            T::bar(&mut bundle.val);
+            T::bar(&mut bundle.value)
         }
 
         //=================//
@@ -167,14 +162,13 @@ mod template_impl {
         #[repr(C)]
         struct Bundle<T> {
             // vtable MUST be the first field
-            // so the `drop` function pointer can be
-            // accessed simply by casting a `Bundle` pointer
+            // see the `Drop` impl of `Thin`
             vtable: VTable,
-            val: T,
+            value: T,
         }
 
-        impl<T: Foo> IntoThin<dyn Foo> for T {
-            fn into_thin(self) -> Thin<dyn Foo> {
+        impl<T: Foo> ThinExt<dyn Foo, T> for Thin<dyn Foo> {
+            fn new(value: T) -> Thin<dyn Foo> {
                 let vtable = VTable {
                     drop: drop::<T>,
                     foo:   foo::<T>,
@@ -183,7 +177,7 @@ mod template_impl {
 
                 let bundle = Bundle {
                     vtable,
-                    val: self,
+                    value,
                 };
 
                 let ptr = Box::into_raw(Box::new(bundle)) as *mut ();
@@ -194,11 +188,11 @@ mod template_impl {
 
         impl Foo for Thin<dyn Foo> {
             fn foo(&self) {
-                let vtable = unsafe { &*(self.ptr as *mut VTable) };
+                let vtable = unsafe { &*(self.ptr as *const VTable) };
                 (vtable.foo)(self.ptr)
             }
             fn bar(&mut self) {
-                let vtable = unsafe { &*(self.ptr as *mut VTable) };
+                let vtable = unsafe { &*(self.ptr as *const VTable) };
                 (vtable.bar)(self.ptr)
             }
         }
