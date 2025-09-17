@@ -102,7 +102,6 @@ mod example_output {
     use super::*;
 
     // `#[thin]` would go here
-    //#[thin]
     trait Foo {
         fn foo(&self);
         fn bar(&mut self);
