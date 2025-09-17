@@ -9,14 +9,34 @@ fn process_trait_item_fn(trait_name: Ident, item_fn: TraitItemFn) -> (Ident, Tok
     let return_type = item_fn.sig.output;
 
     let args = item_fn.sig.inputs.into_iter().collect::<Vec<_>>();
-
-    let receiver = args.get(0).expect(format!("function {}::{} must have a receiver", trait_name, fn_name).as_str());
-
-
-    let non_self_args = args.iter().skip(1);
     let mut arg_names = Vec::new();
     let mut arg_types = Vec::<Type>::new();
+    // conversions of the shims args so they can be passed to the fn proper
     let mut arg_convs = Vec::new();
+
+    let Some(FnArg::Receiver(receiver)) = args.get(0) else {
+        panic!("function {}::{} must have a receiver", trait_name, fn_name)
+    };
+    match receiver.mutability {
+        Some(_) => {
+            arg_names.push(parse_quote! { ptr });
+            arg_types.push(parse_quote! { *mut () });
+            arg_convs.push(quote! {
+                // no reference to the bundles vtable is created?
+                let ptr = unsafe { &mut ((*(ptr as *mut Bundle<T>)).value) };
+            });
+        },
+        None => {
+            arg_names.push(parse_quote! { ptr });
+            arg_types.push(parse_quote! { *const () });
+            arg_convs.push(quote! {
+                // no reference to the bundles vtable is created?
+                let ptr = unsafe { &((*(ptr as *const Bundle<T>)).value) };
+            });
+        }
+    };
+
+    let non_self_args = &args[1..];
     for arg in non_self_args {
         let FnArg::Typed(pat_type) = arg else {
             panic!("error parsing argument of `{}::{}`", trait_name, fn_name);
@@ -28,10 +48,9 @@ fn process_trait_item_fn(trait_name: Ident, item_fn: TraitItemFn) -> (Ident, Tok
         };
         arg_names.push(arg_name.clone());
 
-        // convert any reference types to pointers
-        // as fn pointers can't have lifetime generics
-        let arg_type = &*pat_type.ty;
-        match arg_type {
+        match *pat_type.ty.clone() {
+            // convert any reference types to pointers
+            // as fn pointers can't have lifetime generics
             Type::Reference(
                 TypeReference { elem, mutability, .. }
             ) => {
@@ -49,31 +68,39 @@ fn process_trait_item_fn(trait_name: Ident, item_fn: TraitItemFn) -> (Ident, Tok
                         );
                     },
                 }
-            }
-            _ => {},
+            },
+            arg_type => {
+                arg_types.push(arg_type);
+            },
         };
     }
 
-    let wrapper = quote! {
-        extern "C" fn #fn_name<T: #trait_name>(ptr: *mut (), #(#arg_names: #arg_types),*) #return_type {
-            let bundle = unsafe { &mut *(ptr as *mut Bundle<T>) };
+    let shim = quote! {
+        extern "C" fn #fn_name<T: #trait_name>(#(#arg_names: #arg_types),*) #return_type {
             #(#arg_convs)*
-            T::#fn_name(&mut bundle.value, #(#arg_names),*)
+            T::#fn_name(#(#arg_names),*)
         }
     };
 
     let vtable_field = quote! {
-        #fn_name: extern "C" fn(*mut (), #(#arg_types),*) #return_type
+        #fn_name: extern "C" fn(#(#arg_types),*) #return_type
     };
 
     let trait_fn_impl = quote! {
         fn #fn_name(#(#args),*) #return_type {
-            let vtable = unsafe { &*(self.ptr as *const VTable) };
-            (vtable.#fn_name)(self.ptr, #(#arg_names),*)
+            let ptr = self.ptr;
+            let shim = {
+                let vtable = unsafe { &*(ptr as *const VTable) };
+                vtable.#fn_name.clone()
+                // reference to vtable dropped here
+                // so new references can be created inside `shim`
+            };
+
+            shim(#(#arg_names),*)
         }
     };
 
-    (fn_name, vtable_field, wrapper, trait_fn_impl)
+    (fn_name, vtable_field, shim, trait_fn_impl)
 }
 
 #[proc_macro_attribute]
@@ -88,26 +115,24 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
             Fn(function) => {
                 trait_item_fns.push(function.clone());
             }
-            _ => panic!("non-function items within the trait are not currently supported."),
+            _ => panic!("non-function items are not supported."),
         }
     }
 
     let mut fn_names = Vec::new();
     let mut vtable_fields = Vec::new();
-    let mut wrappers = Vec::new();
+    let mut shims = Vec::new();
     let mut trait_fn_impls = Vec::new();
     for item_fn in trait_item_fns {
-        let (fn_name, vtable_field, wrapper, trait_fn_impl)= process_trait_item_fn(trait_name.clone(), item_fn.clone());
+        let (fn_name, vtable_field, shim, trait_fn_impl)= process_trait_item_fn(trait_name.clone(), item_fn.clone());
         fn_names.push(fn_name);
         vtable_fields.push(vtable_field);
-        wrappers.push(wrapper);
+        shims.push(shim);
         trait_fn_impls.push(trait_fn_impl);
     }
 
     quote! {
         #item_trait
-
-
 
         const _: () = {
             #[repr(C)]
@@ -132,7 +157,7 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 let _ = unsafe { Box::from_raw(bundle) };
             }
 
-            #(#wrappers)*
+            #(#shims)*
 
             impl<T: #trait_name> ThinExt<dyn #trait_name, T> for Thin<dyn #trait_name> {
                 fn new(value: T) -> Thin<dyn #trait_name> {

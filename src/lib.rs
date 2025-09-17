@@ -25,24 +25,17 @@ use std::marker::PhantomData;
 
 pub use thin_trait_objects_macros::thin;
 
-/// Wraps a pointer to a value of type `Bundle`, generated for each trait by the `#[thin]` attribute:
-///
-/// ```
-/// #[repr(C)]
-/// struct Bundle<T: Trait> {
-///     vtable: VTable,
-///     value: T,
-/// }
-///
-/// #[repr(C)]
-/// struct VTable {
-///     drop: extern "C" fn(*mut ()),
-///     // additional fields...
-/// }
-/// ```
+/*
+    TODO:
+     - support for functions that return references
+*/
+
+
 #[repr(transparent)]
 pub struct Thin<T: ?Sized> {
-    // type-erased `*mut Bundle`
+    // `T` is always `dyn F` for some trait `F`
+    // type-erased `*mut Bundle<K> where `K: F`
+    // todo: make private
     pub ptr: *mut (),
     phantom: PhantomData<T>,
 }
@@ -104,15 +97,17 @@ mod tests {
     }
 }
 
-// basis for the design of the #[thin] attribute
-mod template_impl {
+// example output of the `#[thin]` attribute
+mod example_output {
     use super::*;
 
-    // some attribute to put on your traits
-    // #[thin]
+    // `#[thin]` would go here
+    //#[thin]
     trait Foo {
         fn foo(&self);
         fn bar(&mut self);
+        fn add(&mut self, other: u8);
+        fn get(&self) -> u8;
     }
 
     impl Foo for u8 {
@@ -122,6 +117,12 @@ mod template_impl {
         fn bar(&mut self) {
             println!("u8 bar! self: {}", self);
         }
+        fn add(&mut self, other: u8) {
+            *self += other;
+        }
+        fn get(&self) -> u8 {
+            *self
+        }
     }
 
     //============================//
@@ -130,70 +131,77 @@ mod template_impl {
     const _: () = {
         #[repr(C)]
         struct VTable {
-            // drop MUST be the first field
-            // see the `Drop` impl of `Thin`
             drop: extern "C" fn(*mut ()),
-            foo:  extern "C" fn(*mut ()),
-            bar:  extern "C" fn(*mut ()),
+            foo: extern "C" fn(*const ()),
+            bar: extern "C" fn(*mut ()),
+            add: extern "C" fn(*mut (), u8),
+            get: extern "C" fn(*const ()) -> u8,
         }
-
-        //=================//
-        // these functions are compiled at the source of the thin trait object,
-        // and are what get passed around in the vtable
-
-        extern "C" fn drop<T: Foo>(ptr: *mut ()) {
-            let bundle = ptr as *mut Bundle<T>;
-            // SAFETY: the bundle pointer was obtained using `Box::into_raw`
-            let _ = unsafe { Box::from_raw(bundle) };
-        }
-
-        extern "C" fn foo<T: Foo>(ptr: *mut ()) {
-            let bundle = unsafe { &*(ptr as *const Bundle<T>) };
-            T::foo(&bundle.value)
-        }
-
-        extern "C" fn bar<T: Foo>(ptr: *mut ()) {
-            let bundle = unsafe { &mut *(ptr as *mut Bundle<T>) };
-            T::bar(&mut bundle.value)
-        }
-
-        //=================//
-
         #[repr(C)]
-        struct Bundle<T> {
-            // vtable MUST be the first field
-            // see the `Drop` impl of `Thin`
+        struct Bundle<T: Foo> {
             vtable: VTable,
             value: T,
         }
-
+        extern "C" fn drop<T: Foo>(ptr: *mut ()) {
+            let bundle = ptr as *mut Bundle<T>;
+            let _ = unsafe { Box::from_raw(bundle) };
+        }
+        extern "C" fn foo<T: Foo>(ptr: *const ()) {
+            let ptr = unsafe { &((*(ptr as *const Bundle<T>)).value) };
+            T::foo(ptr)
+        }
+        extern "C" fn bar<T: Foo>(ptr: *mut ()) {
+            let ptr = unsafe { &mut ((*(ptr as *mut Bundle<T>)).value) };
+            T::bar(ptr)
+        }
+        extern "C" fn add<T: Foo>(ptr: *mut (), other: u8) {
+            let ptr = unsafe { &mut ((*(ptr as *mut Bundle<T>)).value) };
+            T::add(ptr, other)
+        }
+        extern "C" fn get<T: Foo>(ptr: *const ()) -> u8 {
+            let ptr = unsafe { &((*(ptr as *const Bundle<T>)).value) };
+            T::get(ptr)
+        }
         impl<T: Foo> ThinExt<dyn Foo, T> for Thin<dyn Foo> {
             fn new(value: T) -> Thin<dyn Foo> {
-                let vtable = VTable {
-                    drop: drop::<T>,
-                    foo:   foo::<T>,
-                    bar:   bar::<T>,
-                };
-
-                let bundle = Bundle {
-                    vtable,
-                    value,
-                };
-
+                let vtable = VTable { drop: drop::<T>, foo: foo::<T>, bar: bar::<T>, add: add::<T>, get: get::<T> };
+                let bundle = Bundle { vtable, value };
                 let ptr = Box::into_raw(Box::new(bundle)) as *mut ();
-
                 unsafe { Thin::from_raw(ptr) }
             }
         }
-
         impl Foo for Thin<dyn Foo> {
             fn foo(&self) {
-                let vtable = unsafe { &*(self.ptr as *const VTable) };
-                (vtable.foo)(self.ptr)
+                let ptr = self.ptr;
+                let shim = {
+                    let vtable = unsafe { &*(ptr as *const VTable) };
+                    vtable.foo.clone()
+                };
+                shim(ptr)
             }
             fn bar(&mut self) {
-                let vtable = unsafe { &*(self.ptr as *const VTable) };
-                (vtable.bar)(self.ptr)
+                let ptr = self.ptr;
+                let shim = {
+                    let vtable = unsafe { &*(ptr as *const VTable) };
+                    vtable.bar.clone()
+                };
+                shim(ptr)
+            }
+            fn add(&mut self, other: u8) {
+                let ptr = self.ptr;
+                let shim = {
+                    let vtable = unsafe { &*(ptr as *const VTable) };
+                    vtable.add.clone()
+                };
+                shim(ptr, other)
+            }
+            fn get(&self) -> u8 {
+                let ptr = self.ptr;
+                let shim = {
+                    let vtable = unsafe { &*(ptr as *const VTable) };
+                    vtable.get.clone()
+                };
+                shim(ptr)
             }
         }
     };
