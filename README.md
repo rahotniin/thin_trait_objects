@@ -2,7 +2,8 @@ This crate provides the `Thin` type, an ffi-safe 1-pointer-wide trait object, us
 
 ```rust
     use thin_trait_objects::*;
-    
+
+    // attribute generates `impl`s for `Thin<dyn Foo>`
     #[thin]
     trait Foo {
         fn foo(&self) -> u8;
