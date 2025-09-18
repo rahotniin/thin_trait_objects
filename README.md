@@ -26,7 +26,7 @@ fn main() {
     assert_eq!(*thin.get(), 9u8);
 
     // the inner value can be obtained via downcasting
-    let value: u8 = unsafe { thin.downcast() };
+    let value: u8 = unsafe { thin.downcast_unchecked() };
     assert_eq!(value, 9u8);
 }
  ```

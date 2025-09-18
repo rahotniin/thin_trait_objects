@@ -205,7 +205,7 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     unsafe { Thin::from_raw(ptr as *mut ()) }
                 }
 
-                unsafe fn downcast(self) -> T {
+                unsafe fn downcast_unchecked(self) -> T {
                     let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
                     ::std::mem::forget(self);
                     let bundle = unsafe { Box::from_raw(ptr) };

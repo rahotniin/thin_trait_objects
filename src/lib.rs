@@ -26,7 +26,7 @@
 //! assert_eq!(*thin.get(), 9u8);
 //!
 //! // the inner value can be obtained via downcasting
-//! let value: u8 = unsafe { thin.downcast() };
+//! let value: u8 = unsafe { thin.downcast_unchecked() };
 //! assert_eq!(value, 9u8);
 //!
 //! ```
@@ -64,7 +64,7 @@ pub trait ThinExt<T: ?Sized, K> {
     ///
     /// # Safety
     /// The contained value must be of type K. Calling this method with the incorrect type is undefined behavior.
-    unsafe fn downcast(self) -> K;
+    unsafe fn downcast_unchecked(self) -> K;
 }
 
 impl<T: ?Sized> Drop for Thin<T> {
@@ -147,7 +147,7 @@ mod tests {
         thin.add(1u8);
         assert_eq!(*thin.get(), 9u8);
 
-        let value: u8 = unsafe { thin.downcast() };
+        let value: u8 = unsafe { thin.downcast_unchecked() };
         assert_eq!(value, 9u8);
     }
 }
@@ -196,7 +196,7 @@ mod example_macro_expansion {
                 let ptr = Box::into_raw(Box::new(bundle));
                 unsafe { Thin::from_raw(ptr as *mut ()) }
             }
-            unsafe fn downcast(self) -> T {
+            unsafe fn downcast_unchecked(self) -> T {
                 let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
                 ::std::mem::forget(self);
                 let bundle = unsafe { Box::from_raw(ptr) };
