@@ -1,85 +1,129 @@
-//! This crate provides the `Thin` type, a 1-pointer-wide trait object, used like so:
+//! This crate provides the `Thin` type, a 1-pointer-wide trait object that also aims to be ffi-safe.Used like so:
 //!
-//! ```
+//! ```rust
 //! use thin_trait_objects::*;
 //!
 //! #[thin]
-//! trait Foo {
-//!     fn foo(&self) -> u8;
+//! trait Foo: 'static {
+//!     fn get(&self) -> &u8;
+//!     fn add(&mut self, other: u8);
 //! }
 //!
 //! impl Foo for u8 {
-//!     fn foo(&self) -> u8 {
-//!         *self
+//!     fn get(&self) -> &u8 {
+//!         self
+//!     }
+//!
+//!     fn add(&mut self, other: u8) {
+//!         *self += other
 //!     }
 //! }
 //!
-//! fn main() {
-//!     let thin = Thin::<dyn Foo>::new(8u8);
-//!     // `Foo` is automatically implemented for `Thin<dyn Foo>`
-//!     assert_eq!(thin.foo(), 8u8);
-//! }
+//!
+//! let mut thin = Thin::<dyn Foo>::new(8u8);
+//! // `Foo` is automatically implemented for `Thin<dyn Foo>`
+//! thin.add(1u8);
+//! assert_eq!(*thin.get(), 9u8);
+//!
+//! // the inner value can be obtained via downcasting
+//! let value: u8 = unsafe { thin.downcast() };
+//! assert_eq!(value, 9u8);
+//!
 //! ```
+//!
+//! Limitations:
+//! - Annotated traits must have a `'static` bound (for now).
+//! - Methods with non-lifetime generics are not supported.
 
 use std::marker::PhantomData;
-
 pub use thin_trait_objects_macros::thin;
-
-/*
-    TODO:
-     - support for functions that return references
-*/
-
 
 #[repr(transparent)]
 pub struct Thin<T: ?Sized> {
-    // `T` is always `dyn F` for some trait `F`
-    // type-erased `*mut Bundle<K> where `K: F`
-    // todo: make private
+    // type-erased `*mut Bundle<K> where `K: F` and `T` is `dyn F`
     pub ptr: *mut (),
     phantom: PhantomData<T>,
 }
 
 impl<T: ?Sized> Thin<T> {
+    #[doc(hidden)]
     pub unsafe fn from_raw(ptr: *mut ()) -> Thin<T> {
         Thin { ptr, phantom: PhantomData }
     }
 }
 
 pub trait ThinExt<T: ?Sized, K> {
-    fn new(val: K) -> Thin<T>;
+    /// Creates a new `Thin<dyn _>` from the given value.
+    fn new(val: K) -> Self;
+
+    /// Consumes this `Thin` and returns the inner value.
+    ///
+    /// # Safety
+    /// The contained value must be of type K. Calling this method with the incorrect type is undefined behavior.
+    unsafe fn downcast(self) -> K;
 }
 
 impl<T: ?Sized> Drop for Thin<T> {
     fn drop(&mut self) {
         // SAFETY: `Bundle` and `VTable` are `#[repr(C)]`,
-        // so the `drop` field of `VTable` will be positioned first in the memory layout of `Bundle`
+        // so the `drop` field of `VTable` will be positioned first in the memory layout of `Bundle`.
+        // see: https://adventures.michaelfbryan.com/posts/ffi-safe-polymorphism-in-rust/?utm_source=user-forums&utm_medium=social&utm_campaign=thin-trait-objects#pointer-to-vtable--object
         let dropper: extern "C" fn(*mut ()) = unsafe { *self.ptr.cast() };
         dropper(self.ptr);
     }
 }
 
+//========================//
+// Type erasure for the 'receivers' of shims functions
+
+#[repr(transparent)]
+pub struct RefSelf<'a> {
+    pub ptr: *const (),
+    marker: PhantomData<&'a ()>,
+}
+
+impl<'a> RefSelf<'a> {
+    pub fn new<T: ?Sized>(thin: &'a Thin<T>) -> Self {
+        Self {
+            ptr: thin.ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct MutSelf<'a> {
+    pub ptr: *mut (),
+    marker: PhantomData<&'a ()>,
+}
+
+impl<'a> MutSelf<'a> {
+    pub fn new<T: ?Sized>(thin: &'a mut Thin<T>) -> MutSelf<'a> {
+        MutSelf {
+            ptr: thin.ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+//========================//
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thin_trait_objects_macros::thin;
 
     #[thin]
-    trait Foo {
-        fn foo(&self);
-        fn bar(&mut self) -> u16;
-        fn baz(&mut self, msg: &str);
+    trait Foo: 'static {
+        fn add(&mut self, other: u8);
+        fn get(&self) -> &u8;
     }
 
-    impl Foo for u16 {
-        fn foo(&self) {
-            println!("u16 foo! self: {}", self);
+    impl Foo for u8 {
+        fn add(&mut self, other: u8) {
+            *self += other;
         }
-        fn bar(&mut self) -> u16 {
-            *self
-        }
-        fn baz(&mut self, msg: &str) {
-            println!("u16 bar! self: {}, msg: {}", self, msg);
+        fn get(&self) -> &u8 {
+            self
         }
     }
 
@@ -89,119 +133,84 @@ mod tests {
     }
 
     #[test]
-    fn it_works() {
-        let mut thin = Thin::<dyn Foo>::new(16u16);
-        thin.foo();
-        assert_eq!(thin.bar(), 16u16);
-        thin.baz("hello world");
+    fn thin() {
+        let mut thin = Thin::<dyn Foo>::new(8u8);
+        thin.add(1u8);
+        assert_eq!(*thin.get(), 9u8);
+
+        let value: u8 = unsafe { thin.downcast() };
+        assert_eq!(value, 9u8);
     }
 }
 
-// example output of the `#[thin]` attribute
-mod example_output {
+/// Example output of the `#[thin]` attribute
+mod example_macro_expansion {
     use super::*;
 
-    // `#[thin]` would go here
-    //#[thin]
-    trait Foo {
-        fn foo(&self);
-        fn bar(&mut self);
+    //#[allow(unused)]
+    // #[thin]
+    trait Foo: 'static {
         fn add(&mut self, other: u8);
-        fn get(&self) -> u8;
+        fn get(&self) -> &u8;
     }
 
-    impl Foo for u8 {
-        fn foo(&self) {
-            println!("u8 foo! self: {}", self);
-        }
-        fn bar(&mut self) {
-            println!("u8 bar! self: {}", self);
-        }
-        fn add(&mut self, other: u8) {
-            *self += other;
-        }
-        fn get(&self) -> u8 {
-            *self
-        }
-    }
-
-    //============================//
-    // code generated by the attribute:
-
+    // expansion:
     const _: () = {
         #[repr(C)]
         struct VTable {
             drop: extern "C" fn(*mut ()),
-            foo: extern "C" fn(*const ()),
-            bar: extern "C" fn(*mut ()),
-            add: extern "C" fn(*mut (), u8),
-            get: extern "C" fn(*const ()) -> u8,
+            add: extern "C" fn(MutSelf<'_>, u8),
+            get: extern "C" fn(RefSelf<'_>) -> &'_ u8,
+        }
+        extern "C" fn drop<T: Foo>(ptr: *mut ()) {
+            let bundle = ptr as *mut Bundle<T>;
+            let _ = unsafe { Box::from_raw(bundle) };
+        }
+        extern "C" fn add<T: Foo>(recv: MutSelf<'_>, other: u8) {
+            let bundle = unsafe { &mut *(recv.ptr as *mut Bundle<T>) };
+            let recv = &mut bundle.value;
+            T::add(recv, other)
+        }
+        extern "C" fn get<T: Foo>(recv: RefSelf<'_>) -> &'_ u8 {
+            let bundle = unsafe { &*(recv.ptr as *const Bundle<T>) };
+            let recv = &bundle.value;
+            T::get(recv)
         }
         #[repr(C)]
         struct Bundle<T: Foo> {
             vtable: VTable,
             value: T,
         }
-        extern "C" fn drop<T: Foo>(ptr: *mut ()) {
-            let bundle = ptr as *mut Bundle<T>;
-            let _ = unsafe { Box::from_raw(bundle) };
-        }
-        extern "C" fn foo<T: Foo>(ptr: *const ()) {
-            let ptr = unsafe { &((*(ptr as *const Bundle<T>)).value) };
-            T::foo(ptr)
-        }
-        extern "C" fn bar<T: Foo>(ptr: *mut ()) {
-            let ptr = unsafe { &mut ((*(ptr as *mut Bundle<T>)).value) };
-            T::bar(ptr)
-        }
-        extern "C" fn add<T: Foo>(ptr: *mut (), other: u8) {
-            let ptr = unsafe { &mut ((*(ptr as *mut Bundle<T>)).value) };
-            T::add(ptr, other)
-        }
-        extern "C" fn get<T: Foo>(ptr: *const ()) -> u8 {
-            let ptr = unsafe { &((*(ptr as *const Bundle<T>)).value) };
-            T::get(ptr)
-        }
         impl<T: Foo> ThinExt<dyn Foo, T> for Thin<dyn Foo> {
-            fn new(value: T) -> Thin<dyn Foo> {
-                let vtable = VTable { drop: drop::<T>, foo: foo::<T>, bar: bar::<T>, add: add::<T>, get: get::<T> };
+            fn new(value: T) -> Self {
+                let vtable = VTable { drop: drop::<T>, add: add::<T>, get: get::<T> };
                 let bundle = Bundle { vtable, value };
-                let ptr = Box::into_raw(Box::new(bundle)) as *mut ();
-                unsafe { Thin::from_raw(ptr) }
+                let ptr = Box::into_raw(Box::new(bundle));
+                unsafe { Thin::from_raw(ptr as *mut ()) }
+            }
+            unsafe fn downcast(self) -> T {
+                let ptr = self.ptr as *mut Bundle<T>;
+                ::std::mem::forget(self);
+                let bundle = unsafe { Box::from_raw(ptr) };
+                bundle.value
             }
         }
         impl Foo for Thin<dyn Foo> {
-            fn foo(&self) {
-                let ptr = self.ptr;
-                let shim = {
-                    let vtable = unsafe { &*(ptr as *const VTable) };
-                    vtable.foo.clone()
-                };
-                shim(ptr)
-            }
-            fn bar(&mut self) {
-                let ptr = self.ptr;
-                let shim = {
-                    let vtable = unsafe { &*(ptr as *const VTable) };
-                    vtable.bar.clone()
-                };
-                shim(ptr)
-            }
             fn add(&mut self, other: u8) {
-                let ptr = self.ptr;
                 let shim = {
-                    let vtable = unsafe { &*(ptr as *const VTable) };
-                    vtable.add.clone()
+                    let vtable = unsafe { &*(self.ptr as *const VTable) };
+                    vtable.add
                 };
-                shim(ptr, other)
+                let recv = MutSelf::new(self);
+                shim(recv, other)
             }
-            fn get(&self) -> u8 {
-                let ptr = self.ptr;
+            fn get(&self) -> &'_ u8 {
                 let shim = {
-                    let vtable = unsafe { &*(ptr as *const VTable) };
-                    vtable.get.clone()
+                    let vtable = unsafe { &*(self.ptr as *const VTable) };
+                    vtable.get
                 };
-                shim(ptr)
+                let recv = RefSelf::new(self);
+                shim(recv)
             }
         }
     };
