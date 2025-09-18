@@ -56,15 +56,27 @@ impl<T: ?Sized> Thin<T> {
     }
 }
 
-pub trait ThinExt<T: ?Sized, K> {
+pub trait ThinExt<U: ?Sized, T> {
     /// Creates a new `Thin<dyn _>` from the given value.
-    fn new(val: K) -> Self;
+    fn new(val: T) -> Self;
 
     /// Consumes this `Thin` and returns the inner value.
     ///
     /// # Safety
-    /// The contained value must be of type K. Calling this method with the incorrect type is undefined behavior.
-    unsafe fn downcast_unchecked(self) -> K;
+    /// The contained value must be of type `T`. Calling this method with the incorrect type is undefined behavior.
+    unsafe fn downcast_unchecked(self) -> T;
+
+    /// Returns an immutable reference to the inner value.
+    ///
+    /// # Safety
+    /// The contained value must be of type `T`. Calling this method with the incorrect type is undefined behavior.
+    unsafe fn downcast_ref_unchecked(&self) -> &T;
+
+    /// Returns a mutable reference to the inner value.
+    ///
+    /// # Safety
+    /// The contained value must be of type `T`. Calling this method with the incorrect type is undefined behavior.
+    unsafe fn downcast_mut_unchecked(&mut self) -> &mut T;
 }
 
 impl<T: ?Sized> Drop for Thin<T> {
@@ -142,10 +154,21 @@ mod tests {
     }
 
     #[test]
-    fn thin() {
+    fn thin_foo() {
         let mut thin = Thin::<dyn Foo>::new(8u8);
         thin.add(1u8);
         assert_eq!(*thin.get(), 9u8);
+    }
+
+    #[test]
+    fn down_casting() {
+        let mut thin = Thin::<dyn Foo>::new(8u8);
+
+        let borrow: &u8 = unsafe { thin.downcast_ref_unchecked() };
+        assert_eq!(*borrow, 8u8);
+
+        let borrow: &mut u8 = unsafe { thin.downcast_mut_unchecked() };
+        *borrow += 1u8;
 
         let value: u8 = unsafe { thin.downcast_unchecked() };
         assert_eq!(value, 9u8);
@@ -156,7 +179,7 @@ mod tests {
 mod example_macro_expansion {
     use super::*;
 
-    // #[thin]
+    //#[thin]
     trait Foo: 'static {
         fn add(&mut self, other: u8);
         fn get(&self) -> &u8;
@@ -201,6 +224,16 @@ mod example_macro_expansion {
                 ::std::mem::forget(self);
                 let bundle = unsafe { Box::from_raw(ptr) };
                 bundle.value
+            }
+            unsafe fn downcast_ref_unchecked(&self) -> &T {
+                let ptr = self.ptr.as_ptr() as *const Bundle<T>;
+                let bundle = unsafe { &*ptr };
+                &bundle.value
+            }
+            unsafe fn downcast_mut_unchecked(&mut self) -> &mut T {
+                let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
+                let bundle = unsafe { &mut *ptr };
+                &mut bundle.value
             }
         }
         impl Foo for Thin<dyn Foo> {

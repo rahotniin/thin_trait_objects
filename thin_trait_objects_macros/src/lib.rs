@@ -211,6 +211,18 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     let bundle = unsafe { Box::from_raw(ptr) };
                     bundle.value
                 }
+
+                unsafe fn downcast_ref_unchecked(&self) -> &T {
+                    let ptr = self.ptr.as_ptr() as *const Bundle<T>;
+                    let bundle = unsafe { &*ptr };
+                    &bundle.value
+                }
+
+                unsafe fn downcast_mut_unchecked(&mut self) -> &mut T {
+                    let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
+                    let bundle = unsafe { &mut *ptr };
+                    &mut bundle.value
+                }
             }
 
             impl #trait_name for Thin<dyn #trait_name> {
