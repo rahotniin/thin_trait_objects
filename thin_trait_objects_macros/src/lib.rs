@@ -151,7 +151,7 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 let shim = {
                     // SAFETY:
                     // see https://adventures.michaelfbryan.com/posts/ffi-safe-polymorphism-in-rust/?utm_source=user-forums&utm_medium=social&utm_campaign=thin-trait-objects#pointer-to-vtable--object
-                    let vtable = unsafe { &*(self.ptr as *const VTable) };
+                    let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
                     vtable.#fn_name
                     // reference to vtable dropped here?
                 };
@@ -206,7 +206,7 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
 
                 unsafe fn downcast(self) -> T {
-                    let ptr = self.ptr as *mut Bundle<T>;
+                    let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
                     ::std::mem::forget(self);
                     let bundle = unsafe { Box::from_raw(ptr) };
                     bundle.value

@@ -36,19 +36,23 @@
 //! - Methods with non-lifetime generics are not supported.
 
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 pub use thin_trait_objects_macros::thin;
 
 #[repr(transparent)]
 pub struct Thin<T: ?Sized> {
     // type-erased `*mut Bundle<K> where `K: F` and `T` is `dyn F`
-    pub ptr: *mut (),
+    pub ptr: NonNull<()>,
     phantom: PhantomData<T>,
 }
 
 impl<T: ?Sized> Thin<T> {
     #[doc(hidden)]
     pub unsafe fn from_raw(ptr: *mut ()) -> Thin<T> {
-        Thin { ptr, phantom: PhantomData }
+        Thin {
+            ptr: NonNull::new(ptr).unwrap(),
+            phantom: PhantomData
+        }
     }
 }
 
@@ -68,8 +72,8 @@ impl<T: ?Sized> Drop for Thin<T> {
         // SAFETY: `Bundle` and `VTable` are `#[repr(C)]`,
         // so the `drop` field of `VTable` will be positioned first in the memory layout of `Bundle`.
         // see: https://adventures.michaelfbryan.com/posts/ffi-safe-polymorphism-in-rust/?utm_source=user-forums&utm_medium=social&utm_campaign=thin-trait-objects#pointer-to-vtable--object
-        let dropper: extern "C" fn(*mut ()) = unsafe { *self.ptr.cast() };
-        dropper(self.ptr);
+        let dropper: extern "C" fn(*mut ()) = unsafe { *self.ptr.as_ptr().cast() };
+        dropper(self.ptr.as_ptr());
     }
 }
 
@@ -85,7 +89,7 @@ pub struct RefSelf<'a> {
 impl<'a> RefSelf<'a> {
     pub fn new<T: ?Sized>(thin: &'a Thin<T>) -> Self {
         Self {
-            ptr: thin.ptr,
+            ptr: thin.ptr.as_ptr(),
             marker: PhantomData,
         }
     }
@@ -100,7 +104,7 @@ pub struct MutSelf<'a> {
 impl<'a> MutSelf<'a> {
     pub fn new<T: ?Sized>(thin: &'a mut Thin<T>) -> MutSelf<'a> {
         MutSelf {
-            ptr: thin.ptr,
+            ptr: thin.ptr.as_ptr(),
             marker: PhantomData,
         }
     }
@@ -133,6 +137,11 @@ mod tests {
     }
 
     #[test]
+    fn niche_optimisations() {
+        assert_eq!(size_of::<Option<Thin<dyn Foo>>>(), size_of::<usize>());
+    }
+
+    #[test]
     fn thin() {
         let mut thin = Thin::<dyn Foo>::new(8u8);
         thin.add(1u8);
@@ -147,7 +156,6 @@ mod tests {
 mod example_macro_expansion {
     use super::*;
 
-    //#[allow(unused)]
     // #[thin]
     trait Foo: 'static {
         fn add(&mut self, other: u8);
@@ -189,7 +197,7 @@ mod example_macro_expansion {
                 unsafe { Thin::from_raw(ptr as *mut ()) }
             }
             unsafe fn downcast(self) -> T {
-                let ptr = self.ptr as *mut Bundle<T>;
+                let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
                 ::std::mem::forget(self);
                 let bundle = unsafe { Box::from_raw(ptr) };
                 bundle.value
@@ -198,7 +206,7 @@ mod example_macro_expansion {
         impl Foo for Thin<dyn Foo> {
             fn add(&mut self, other: u8) {
                 let shim = {
-                    let vtable = unsafe { &*(self.ptr as *const VTable) };
+                    let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
                     vtable.add
                 };
                 let recv = MutSelf::new(self);
@@ -206,7 +214,7 @@ mod example_macro_expansion {
             }
             fn get(&self) -> &'_ u8 {
                 let shim = {
-                    let vtable = unsafe { &*(self.ptr as *const VTable) };
+                    let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
                     vtable.get
                 };
                 let recv = RefSelf::new(self);
