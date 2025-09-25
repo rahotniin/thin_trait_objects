@@ -1,7 +1,9 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
-use syn::{parse_macro_input, parse_quote, AngleBracketedGenericArguments, FnArg, GenericArgument, Generics, Ident, ItemTrait, Pat, PatIdent, Path, PathArguments, PathSegment, ReturnType, TraitItem, Type, TypeParamBound, TypePath, TypeReference, TypeTuple};
+use quote::{quote};
+use syn::{parse_macro_input, parse_quote, AngleBracketedGenericArguments, DeriveInput, FnArg, GenericArgument, Generics, Ident, ItemTrait, Pat, PatIdent, Path, PathArguments, PathSegment, ReturnType, TraitItem, Type, TypeParamBound, TypePath, TypeReference, TypeTuple};
+use syn::parse::{Parse, ParseStream};
+//=================//
 
 // TODO: slim this boy down with some helper functions
 #[proc_macro_attribute]
@@ -183,16 +185,16 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#shims)*
 
             #[repr(C)]
-            struct Bundle<T: #trait_name> {
+            struct Bundle<T> {
                 vtable: VTable,
                 value: T
             }
 
-            impl<T: #trait_name> ThinExt<dyn #trait_name, T> for Thin<dyn #trait_name> {
-                fn new(value: T) -> Self {
+            impl<K: #trait_name> ThinExt<dyn #trait_name, K> for Thin<dyn #trait_name> {
+                fn new(value: K) -> Self {
                     let vtable = VTable {
-                        drop: drop::<T>,
-                        #(#fn_names: #fn_names::<T>),*
+                        drop: drop::<K>,
+                        #(#fn_names: #fn_names::<K>),*
                     };
 
                     let bundle = Bundle {
@@ -203,25 +205,6 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     let ptr = Box::into_raw(Box::new(bundle));
 
                     unsafe { Thin::from_raw(ptr as *mut ()) }
-                }
-
-                unsafe fn downcast_unchecked(self) -> T {
-                    let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
-                    ::std::mem::forget(self);
-                    let bundle = unsafe { Box::from_raw(ptr) };
-                    bundle.value
-                }
-
-                unsafe fn downcast_ref_unchecked(&self) -> &T {
-                    let ptr = self.ptr.as_ptr() as *const Bundle<T>;
-                    let bundle = unsafe { &*ptr };
-                    &bundle.value
-                }
-
-                unsafe fn downcast_mut_unchecked(&mut self) -> &mut T {
-                    let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
-                    let bundle = unsafe { &mut *ptr };
-                    &mut bundle.value
                 }
             }
 
@@ -280,4 +263,74 @@ fn forbid_non_lifetime_generics(generics: &Generics, trait_name: &Ident, fn_name
     for _ in const_generics {
         panic!("Error parsing `{}::{}`: const generics are not supported", trait_name, fn_name);
     }
+}
+
+//=================//
+
+#[proc_macro_derive(UUID)]
+pub fn uuid_derive(item: TokenStream) -> TokenStream {
+    impl_uuid_inner(item)
+}
+
+struct Items(Vec<DeriveInput>);
+
+impl Parse for Items {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut derive_input = Vec::new();
+        while let Ok(item) = input.parse::<DeriveInput>() {
+            derive_input.push(item);
+        }
+        Ok(Items(derive_input))
+    }
+}
+
+fn impl_uuid_inner(item: TokenStream) -> TokenStream {
+    let items = parse_macro_input!(item as Items);
+
+    let mut impls = Vec::<TokenStream2>::new();
+    for item in items.0 {
+        let ident = item.ident;
+
+        let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
+
+        let type_params = item.generics.type_params();
+        let where_clause = match where_clause {
+            Some(where_clause) => {
+                quote! { #where_clause, #(#type_params: UUID),* }
+            },
+            None => {
+                quote! { where #(#type_params: UUID),* }
+            },
+        };
+
+        if let Some(_) = item.generics.const_params().next() {
+            panic!("const generics are not currently supported");
+        }
+
+        let type_params = item.generics.type_params();
+        let name_string = ident.to_string();
+        let name_str = name_string.as_str();
+
+        impls.push(quote! {
+            unsafe impl #impl_generics UUID for #ident #ty_generics #where_clause {
+                const UUID: u64 = {
+                    let mut hasher = const_siphasher::sip::SipHasher13::new();
+                    hasher.write(env!("CARGO_PKG_VERSION").as_bytes());
+                    hasher.write(module_path!().as_bytes());
+                    hasher.write(#name_str.as_bytes());
+                    #(hasher.write_u64(#type_params::UUID);)*
+                    hasher.finish()
+                };
+            }
+        })
+    }
+
+    quote! {
+        #(#impls)*
+    }.into()
+}
+
+#[proc_macro]
+pub fn impl_uuid(item: TokenStream) -> TokenStream {
+    impl_uuid_inner(item)
 }

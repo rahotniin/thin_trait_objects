@@ -1,7 +1,7 @@
 //! This crate provides the `Thin` type, a 1-pointer-wide trait object that also aims to be ffi-safe.Used like so:
 //!
 //! ```rust
-//! use thin_trait_objects::*;
+//! use thin_trait_objects::prelude::*;
 //!
 //! #[thin]
 //! trait Foo: 'static {
@@ -25,9 +25,9 @@
 //! thin.add(1u8);
 //! assert_eq!(*thin.get(), 9u8);
 //!
-//! // the inner value can be obtained via downcasting
-//! let value: u8 = unsafe { thin.downcast_unchecked() };
-//! assert_eq!(value, 9u8);
+//!
+//!
+//!
 //!
 //! ```
 //!
@@ -37,7 +37,20 @@
 
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-pub use thin_trait_objects_macros::thin;
+
+mod any;
+
+pub mod prelude {
+    pub use thin_trait_objects_macros::thin;
+    pub use crate::{
+        Thin, ThinExt, RefSelf, MutSelf
+    };
+
+    pub use thin_trait_objects_macros::{
+        UUID, impl_uuid
+    };
+    pub use crate::any::UUID;
+}
 
 #[repr(transparent)]
 pub struct Thin<T: ?Sized> {
@@ -59,24 +72,6 @@ impl<T: ?Sized> Thin<T> {
 pub trait ThinExt<U: ?Sized, T> {
     /// Creates a new `Thin<dyn _>` from the given value.
     fn new(val: T) -> Self;
-
-    /// Consumes this `Thin` and returns the inner value.
-    ///
-    /// # Safety
-    /// The contained value must be of type `T`. Calling this method with the incorrect type is undefined behavior.
-    unsafe fn downcast_unchecked(self) -> T;
-
-    /// Returns an immutable reference to the inner value.
-    ///
-    /// # Safety
-    /// The contained value must be of type `T`. Calling this method with the incorrect type is undefined behavior.
-    unsafe fn downcast_ref_unchecked(&self) -> &T;
-
-    /// Returns a mutable reference to the inner value.
-    ///
-    /// # Safety
-    /// The contained value must be of type `T`. Calling this method with the incorrect type is undefined behavior.
-    unsafe fn downcast_mut_unchecked(&mut self) -> &mut T;
 }
 
 impl<T: ?Sized> Drop for Thin<T> {
@@ -126,7 +121,7 @@ impl<'a> MutSelf<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::prelude::*;
 
     #[thin]
     trait Foo: 'static {
@@ -159,27 +154,13 @@ mod tests {
         thin.add(1u8);
         assert_eq!(*thin.get(), 9u8);
     }
-
-    #[test]
-    fn down_casting() {
-        let mut thin = Thin::<dyn Foo>::new(8u8);
-
-        let borrow: &u8 = unsafe { thin.downcast_ref_unchecked() };
-        assert_eq!(*borrow, 8u8);
-
-        let borrow: &mut u8 = unsafe { thin.downcast_mut_unchecked() };
-        *borrow += 1u8;
-
-        let value: u8 = unsafe { thin.downcast_unchecked() };
-        assert_eq!(value, 9u8);
-    }
 }
 
 /// Example output of the `#[thin]` attribute
 mod example_macro_expansion {
-    use super::*;
+    use crate::prelude::*;
 
-    //#[thin]
+    // #[thin]
     trait Foo: 'static {
         fn add(&mut self, other: u8);
         fn get(&self) -> &u8;
@@ -208,32 +189,16 @@ mod example_macro_expansion {
             T::get(recv)
         }
         #[repr(C)]
-        struct Bundle<T: Foo> {
+        struct Bundle<T> {
             vtable: VTable,
             value: T,
         }
-        impl<T: Foo> ThinExt<dyn Foo, T> for Thin<dyn Foo> {
-            fn new(value: T) -> Self {
-                let vtable = VTable { drop: drop::<T>, add: add::<T>, get: get::<T> };
+        impl<K: Foo> ThinExt<dyn Foo, K> for Thin<dyn Foo> {
+            fn new(value: K) -> Self {
+                let vtable = VTable { drop: drop::<K>, add: add::<K>, get: get::<K> };
                 let bundle = Bundle { vtable, value };
                 let ptr = Box::into_raw(Box::new(bundle));
                 unsafe { Thin::from_raw(ptr as *mut ()) }
-            }
-            unsafe fn downcast_unchecked(self) -> T {
-                let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
-                ::std::mem::forget(self);
-                let bundle = unsafe { Box::from_raw(ptr) };
-                bundle.value
-            }
-            unsafe fn downcast_ref_unchecked(&self) -> &T {
-                let ptr = self.ptr.as_ptr() as *const Bundle<T>;
-                let bundle = unsafe { &*ptr };
-                &bundle.value
-            }
-            unsafe fn downcast_mut_unchecked(&mut self) -> &mut T {
-                let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
-                let bundle = unsafe { &mut *ptr };
-                &mut bundle.value
             }
         }
         impl Foo for Thin<dyn Foo> {

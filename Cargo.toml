@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 thin_trait_objects_macros = { path = "./thin_trait_objects_macros" }
+const-siphasher = "1.0.2"
