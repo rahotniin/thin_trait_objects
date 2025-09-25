@@ -1,11 +1,13 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{quote};
-use syn::{parse_macro_input, parse_quote, AngleBracketedGenericArguments, DeriveInput, FnArg, GenericArgument, Generics, Ident, ItemTrait, Pat, PatIdent, Path, PathArguments, PathSegment, ReturnType, TraitItem, Type, TypeParamBound, TypePath, TypeReference, TypeTuple};
+use quote::quote;
 use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
+use syn::{parse_macro_input, parse_quote, AngleBracketedGenericArguments, DeriveInput, FnArg, GenericArgument, GenericParam, Generics, Ident, ItemTrait, Pat, PatIdent, Path, PathArguments, PathSegment, ReturnType, Token, TraitItem, Type, TypeParamBound, TypePath, TypeReference, TypeTuple, WhereClause};
+
 //=================//
 
-// TODO: slim this boy down with some helper functions
+// TODO: slim this monster down with some helper functions
 #[proc_macro_attribute]
 pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut item_trait = parse_macro_input!(item as ItemTrait);
@@ -218,18 +220,9 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Un-elides a `Types`s lifetimes by inserting `'_` where explicit lifetimes would otherwise be.
 fn un_elide_lifetimes(ty: &mut Type) -> Result<(), Type> {
     // TODO: support for more types
+    //  - arrays
+    //  - slices
     match ty {
-        Type::Reference(TypeReference { lifetime, .. }) => {
-            match lifetime {
-                None => *lifetime = Some(parse_quote!('_)),
-                _ => {}
-            }
-        }
-        Type::Tuple(TypeTuple { elems, .. }) => {
-            for elem in elems {
-                un_elide_lifetimes(elem)?
-            }
-        }
         Type::Path(TypePath { path: Path { segments, ..}, .. }) => {
             for segment in segments {
                 let PathSegment { arguments, .. } = segment;
@@ -247,6 +240,18 @@ fn un_elide_lifetimes(ty: &mut Type) -> Result<(), Type> {
                 }
             }
         }
+        Type::Reference(TypeReference { lifetime, .. }) => {
+            match lifetime {
+                None => *lifetime = Some(parse_quote!('_)),
+                _ => {}
+            }
+        }
+        Type::Tuple(TypeTuple { elems, .. }) => {
+            for elem in elems {
+                un_elide_lifetimes(elem)?
+            }
+        }
+
         _ => return Err(ty.clone()),
     };
 
@@ -267,62 +272,74 @@ fn forbid_non_lifetime_generics(generics: &Generics, trait_name: &Ident, fn_name
 
 //=================//
 
-#[proc_macro_derive(UUID)]
-pub fn uuid_derive(item: TokenStream) -> TokenStream {
-    impl_uuid_inner(item)
+#[proc_macro_derive(StableAny)]
+pub fn stable_any_derive(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as DeriveInput);
+
+    let mut path = Punctuated::<Ident, Token![::]>::new();
+    path.push_value(item.ident);
+
+    let _impl = generate_impl(path, item.generics);
+
+    quote! {
+        #_impl
+    }.into()
 }
 
-struct Items(Vec<DeriveInput>);
+//=================//
 
-impl Parse for Items {
+/// Represents an item inside the `impl_stable_any` macro.
+struct ImplItem {
+    path: Punctuated<Ident, Token![::]>,
+    generics: Punctuated<GenericParam, Token![,]>,
+    where_clause: Option<WhereClause>,
+}
+impl Parse for ImplItem {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut derive_input = Vec::new();
-        while let Ok(item) = input.parse::<DeriveInput>() {
-            derive_input.push(item);
-        }
-        Ok(Items(derive_input))
+        let _ = input.parse::<Token![::]>();
+
+        let path = Punctuated::<Ident, Token![::]>::parse_separated_nonempty(input)?;
+
+        let (generics, where_clause) = match input.parse::<Token![<]>() {
+            Ok(_) => {
+                let generics = Punctuated::<GenericParam, Token![,]>::parse_separated_nonempty(input)?;
+                let where_clause = input.parse::<WhereClause>().ok();
+                let _ = input.parse::<Token![>]>();
+                (generics, where_clause)
+            }
+            Err(_) => (Punctuated::new(), None),
+        };
+
+        Ok(ImplItem {
+            path,
+            generics,
+            where_clause,
+        })
     }
 }
 
-fn impl_uuid_inner(item: TokenStream) -> TokenStream {
-    let items = parse_macro_input!(item as Items);
+struct ImplItems(Punctuated<ImplItem, Token![;]>);
+impl Parse for ImplItems {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(ImplItems(Punctuated::<ImplItem, Token![;]>::parse_terminated(input)?))
+    }
+}
 
-    let mut impls = Vec::<TokenStream2>::new();
-    for item in items.0 {
-        let ident = item.ident;
+#[proc_macro]
+pub fn impl_stable_any(input: TokenStream) -> TokenStream {
+    let type_list = parse_macro_input!(input as ImplItems);
 
-        let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
-
-        let type_params = item.generics.type_params();
-        let where_clause = match where_clause {
-            Some(where_clause) => {
-                quote! { #where_clause, #(#type_params: UUID),* }
-            },
-            None => {
-                quote! { where #(#type_params: UUID),* }
-            },
+    let mut impls = Vec::new();
+    for item in type_list.0 {
+        let path = item.path;
+        let generics = Generics {
+            lt_token: parse_quote!(<),
+            params: item.generics,
+            gt_token: parse_quote!(>),
+            where_clause: item.where_clause,
         };
 
-        if let Some(_) = item.generics.const_params().next() {
-            panic!("const generics are not currently supported");
-        }
-
-        let type_params = item.generics.type_params();
-        let name_string = ident.to_string();
-        let name_str = name_string.as_str();
-
-        impls.push(quote! {
-            unsafe impl #impl_generics UUID for #ident #ty_generics #where_clause {
-                const UUID: u64 = {
-                    let mut hasher = const_siphasher::sip::SipHasher13::new();
-                    hasher.write(env!("CARGO_PKG_VERSION").as_bytes());
-                    hasher.write(module_path!().as_bytes());
-                    hasher.write(#name_str.as_bytes());
-                    #(hasher.write_u64(#type_params::UUID);)*
-                    hasher.finish()
-                };
-            }
-        })
+        impls.push(generate_impl(path, generics));
     }
 
     quote! {
@@ -330,7 +347,53 @@ fn impl_uuid_inner(item: TokenStream) -> TokenStream {
     }.into()
 }
 
-#[proc_macro]
-pub fn impl_uuid(item: TokenStream) -> TokenStream {
-    impl_uuid_inner(item)
+//=================//
+
+/// Generates implementations of `UUID` and `StableAny` for the type given by `path` with the given generics.
+fn generate_impl(ty: Punctuated<Ident, Token![::]>, generics: Generics) -> TokenStream2 {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let type_params = &generics.type_params().map(
+        |param| {
+            param.ident.clone()
+        }
+    ).collect::<Vec<_>>();
+
+    let where_clause = match where_clause {
+        Some(where_clause) => {
+            quote! { #where_clause, #(#type_params: UUID),* }
+        },
+        None => {
+            quote! { where #(#type_params: UUID),* }
+        },
+    };
+
+    let const_params = generics.const_params().map(|param| { &param.ident }).collect::<Vec<_>>();
+
+    let name_string = ty.last().unwrap().to_string();
+    let name_str = name_string.as_str();
+
+    quote! {
+        unsafe impl #impl_generics UUID for #ty #ty_generics #where_clause {
+            const UUID: u64 = {
+                let mut hasher = const_siphasher::sip::SipHasher13::new();
+                hasher.write(env!("CARGO_PKG_VERSION").as_bytes());
+                hasher.write(module_path!().as_bytes());
+                hasher.write(#name_str.as_bytes());
+                #(
+                    hasher.write_u64(#type_params::UUID);
+                )*
+                #(
+                    hasher.write(&(#const_params as u128).to_le_bytes());
+                )*
+                hasher.finish()
+            };
+        }
+
+        unsafe impl #impl_generics StableAny for #ty #ty_generics #where_clause {
+            fn stable_type_id(&self) -> u64 {
+                Self::UUID
+            }
+        }
+    }
 }

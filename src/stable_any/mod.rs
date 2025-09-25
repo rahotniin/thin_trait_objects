@@ -1,13 +1,13 @@
-use std::any::Any;
 use crate::prelude::*;
 
 mod provided;
 
+pub unsafe trait StableAny {
+    fn stable_type_id(&self) -> u64;
+}
+
 pub unsafe trait UUID {
     const UUID: u64;
-    fn uuid(&self) -> u64 {
-        Self::UUID
-    }
 }
 
 macro_rules! impl_thin {
@@ -39,10 +39,8 @@ macro_rules! impl_thin {
                 }
             }
 
-            unsafe impl UUID for Thin<$trait> {
-                const UUID: u64 = 0;
-
-                fn uuid(&self) -> u64 {
+            unsafe impl StableAny for Thin<$trait> {
+                fn stable_type_id(&self) -> u64 {
                     let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
                     vtable.uuid
                 }
@@ -69,7 +67,7 @@ macro_rules! impl_thin {
                 }
 
                 pub fn is<T: UUID>(&self) -> bool {
-                    T::UUID == self.uuid()
+                    T::UUID == self.stable_type_id()
                 }
 
                 pub fn downcast<T: UUID>(self) -> Option<T> {
@@ -100,21 +98,20 @@ macro_rules! impl_thin {
     };
 }
 
-impl_thin!(dyn Any);
-impl_thin!(dyn Any + Send);
-impl_thin!(dyn Any + Send + Sync);
+impl_thin!(dyn StableAny);
+impl_thin!(dyn StableAny + Send);
+impl_thin!(dyn StableAny + Send + Sync);
 
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use std::any::Any;
+    use std::fmt::Display;
     use std::marker::PhantomData;
     use std::mem::ManuallyDrop;
 
     use crate::prelude::*;
 
-
-    #[derive(UUID)]
+    #[derive(StableAny)]
     struct TestStruct<'a, T> {
         f: T,
         phantom: PhantomData<&'a ()>,
@@ -122,7 +119,7 @@ mod tests {
 
     #[test]
     fn compilation_independence() {
-        assert_eq!(TestStruct::<u8>::UUID, 5540856323980585692);
+        assert_eq!(TestStruct::<u8>::UUID, 4891414878033429445);
     }
 
     #[test]
@@ -130,13 +127,13 @@ mod tests {
         assert_ne!(TestStruct::<u8>::UUID, TestStruct::<u16>::UUID);
     }
 
-    #[derive(UUID)]
-    enum TestEnum<T> {
+    #[derive(StableAny)]
+    enum TestEnum<T: Display> {
         Foo(T),
         Bar(TestStruct<'static, T>),
     }
 
-    #[derive(UUID)]
+    #[derive(StableAny)]
     union TestUnion<A, B> {
         foo: ManuallyDrop<A>,
         bar: ManuallyDrop<B>,
@@ -144,7 +141,7 @@ mod tests {
 
     #[test]
     fn downcasting() {
-        let mut thin = Thin::<dyn Any>::new(8u8);
+        let mut thin = Thin::<dyn StableAny>::new(8u8);
 
         let val = thin.downcast_ref::<u8>().unwrap();
         assert_eq!(*val, 8u8);

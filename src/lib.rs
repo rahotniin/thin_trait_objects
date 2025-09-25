@@ -39,6 +39,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 mod any;
+mod stable_any;
 
 pub mod prelude {
     pub use thin_trait_objects_macros::thin;
@@ -47,9 +48,12 @@ pub mod prelude {
     };
 
     pub use thin_trait_objects_macros::{
-        UUID, impl_uuid
+        StableAny, impl_stable_any
     };
-    pub use crate::any::UUID;
+
+    pub use crate::stable_any::{
+        UUID, StableAny
+    };
 }
 
 #[repr(transparent)]
@@ -58,6 +62,9 @@ pub struct Thin<T: ?Sized> {
     pub ptr: NonNull<()>,
     phantom: PhantomData<T>,
 }
+
+unsafe impl<T: ?Sized + Send> Send for Thin<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for Thin<T> {}
 
 impl<T: ?Sized> Thin<T> {
     #[doc(hidden)]
