@@ -1,13 +1,13 @@
 use crate::prelude::*;
 
+type Unit = ();
+
 type Ref<'a, T> = &'a T;
 type Mut<'a, T> = &'a mut T;
 
 type Array<T, const N: usize> = [T; N];
 
 type Slice<T> = [T];
-
-type Unit = ();
 
 type Tuple1<T1>                                             = (T1,);
 type Tuple2<T1, T2>                                         = (T1, T2);

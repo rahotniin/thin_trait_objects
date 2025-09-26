@@ -375,25 +375,20 @@ fn generate_impl(ty: Punctuated<Ident, Token![::]>, generics: Generics) -> Token
 
     quote! {
         unsafe impl #impl_generics UUID for #ty #ty_generics #where_clause {
-            const UUID: u64 = {
+            const UUID: StableTypeId = {
                 let mut hasher = const_siphasher::sip::SipHasher13::new();
                 hasher.write(env!("CARGO_PKG_VERSION").as_bytes());
                 hasher.write(module_path!().as_bytes());
                 hasher.write(#name_str.as_bytes());
-                #(
-                    hasher.write_u64(#type_params::UUID);
-                )*
+                unsafe { #(
+                    hasher.write_u64(#type_params::UUID.to_u64());
+                )* }
                 #(
                     hasher.write(&(#const_params as u128).to_le_bytes());
                 )*
-                hasher.finish()
+                let id = hasher.finish();
+                unsafe { StableTypeId::new(id) }
             };
-        }
-
-        unsafe impl #impl_generics StableAny for #ty #ty_generics #where_clause {
-            fn stable_type_id(&self) -> u64 {
-                Self::UUID
-            }
         }
     }
 }

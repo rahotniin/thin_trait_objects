@@ -76,7 +76,7 @@ pub mod prelude {
     };
 
     pub use crate::stable_any::{
-        UUID, StableAny
+        UUID, StableAny, StableTypeId
     };
 }
 

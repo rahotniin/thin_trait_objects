@@ -1,13 +1,56 @@
+use std::fmt::{Debug, Formatter};
 use crate::prelude::*;
 
+/// Module providing implementations of `UUID` for various foreign types.
 mod provided;
 
-pub unsafe trait StableAny {
-    fn stable_type_id(&self) -> u64;
+pub unsafe trait UUID {
+    const UUID: StableTypeId;
 }
 
-pub unsafe trait UUID {
-    const UUID: u64;
+#[derive(PartialEq, Eq, Copy, Clone)]
+pub struct StableTypeId(u64);
+
+impl StableTypeId {
+    const unsafe fn new(val: u64) -> Self {
+        Self(val)
+    }
+
+    const unsafe fn to_u64(self) -> u64 {
+        self.0
+    }
+
+    pub const fn of<T: private::StableAny>() -> StableTypeId {
+        T::Inner::UUID
+    }
+}
+
+impl Debug for StableTypeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", self.0))
+    }
+}
+
+mod private {
+    use super::*;
+
+    pub unsafe trait StableAny {
+        type Inner: UUID + ?Sized;
+        fn stable_type_id(&self) -> StableTypeId;
+    }
+
+    unsafe impl<T: UUID> StableAny for T {
+        type Inner = T;
+        fn stable_type_id(&self) -> StableTypeId {
+            T::UUID
+        }
+    }
+}
+
+pub trait StableAny: private::StableAny<Inner = ()> {
+    fn stable_type_id(&self) -> StableTypeId {
+        <<Self as private::StableAny>::Inner as UUID>::UUID
+    }
 }
 
 macro_rules! impl_thin {
@@ -16,7 +59,7 @@ macro_rules! impl_thin {
             #[repr(C)]
             struct VTable {
                 drop: extern "C" fn(*mut ()),
-                uuid: u64,
+                uuid: StableTypeId,
             }
 
             extern "C" fn drop<T: UUID>(ptr: *mut ()) {
@@ -32,15 +75,16 @@ macro_rules! impl_thin {
 
             impl<K: UUID> ThinExt<$trait, K> for Thin<$trait> {
                 fn new(value: K) -> Self {
-                    let vtable = VTable { drop: drop::<K>, uuid: K::UUID };
+                    let vtable = VTable { drop: drop::<K>, uuid: StableTypeId::of::<K>() };
                     let bundle = Bundle { vtable, value };
                     let ptr = Box::into_raw(Box::new(bundle));
                     unsafe { Thin::from_raw(ptr as *mut ()) }
                 }
             }
 
-            unsafe impl StableAny for Thin<$trait> {
-                fn stable_type_id(&self) -> u64 {
+            unsafe impl private::StableAny for Thin<$trait> {
+                type Inner = ();
+                fn stable_type_id(&self) -> StableTypeId {
                     let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
                     vtable.uuid
                 }
@@ -67,7 +111,7 @@ macro_rules! impl_thin {
                 }
 
                 pub fn stable_is<T: UUID>(&self) -> bool {
-                    T::UUID == self.stable_type_id()
+                    T::UUID == private::StableAny::stable_type_id(self)
                 }
 
                 pub fn downcast<T: UUID>(self) -> Option<T> {
@@ -110,6 +154,7 @@ mod tests {
     use std::mem::ManuallyDrop;
 
     use crate::prelude::*;
+    use crate::stable_any::StableAny;
 
     #[derive(StableAny)]
     struct TestStruct<'a, T> {
@@ -119,12 +164,12 @@ mod tests {
 
     #[test]
     fn compilation_independence() {
-        assert_eq!(TestStruct::<u8>::UUID, 6917276301935014561);
+        assert_eq!(StableTypeId::of::<TestStruct<u8>>(), unsafe { StableTypeId::new(7578435656508451722) });
     }
 
     #[test]
     fn type_generics() {
-        assert_ne!(TestStruct::<u8>::UUID, TestStruct::<u16>::UUID);
+        assert_ne!(StableTypeId::of::<TestStruct<u8>>(), StableTypeId::of::<TestStruct<u16>>());
     }
 
     #[derive(StableAny)]
