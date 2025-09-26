@@ -66,12 +66,12 @@ macro_rules! impl_thin {
                     &mut bundle.value
                 }
 
-                pub fn is<T: UUID>(&self) -> bool {
+                pub fn stable_is<T: UUID>(&self) -> bool {
                     T::UUID == self.stable_type_id()
                 }
 
                 pub fn downcast<T: UUID>(self) -> Option<T> {
-                    if self.is::<T>() {
+                    if self.stable_is::<T>() {
                         let val: T = unsafe { self.downcast_unchecked::<T>() };
                         return Some(val);
                     }
@@ -79,7 +79,7 @@ macro_rules! impl_thin {
                 }
 
                 pub fn downcast_ref<T: UUID>(&self) -> Option<&T> {
-                    if self.is::<T>() {
+                    if self.stable_is::<T>() {
                         let val: &T = unsafe { self.downcast_ref_unchecked::<T>() };
                         return Some(val);
                     }
@@ -87,7 +87,7 @@ macro_rules! impl_thin {
                 }
 
                 pub fn downcast_mut<T: UUID>(&mut self) -> Option<&mut T> {
-                    if self.is::<T>() {
+                    if self.stable_is::<T>() {
                         let val: &mut T = unsafe { self.downcast_mut_unchecked::<T>() };
                         return Some(val);
                     }
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn compilation_independence() {
-        assert_eq!(TestStruct::<u8>::UUID, 4891414878033429445);
+        assert_eq!(TestStruct::<u8>::UUID, 6917276301935014561);
     }
 
     #[test]
