@@ -185,6 +185,18 @@ mod tests {
         thin.add(1u8);
         assert_eq!(*thin.get(), 9u8);
     }
+
+    #[thin]
+    trait Maximal: 'static {
+        fn ref_self(&self);
+        fn mut_self(&mut self);
+        #[allow(clippy::needless_lifetimes)]
+        fn self_lifetime<'a>(&'a self) -> &'a u8;
+        fn elided_self_lifetime<'a>(&self, other: &'a u8) -> &'a u8;
+        fn more_lifetimes<'a, 'b>(&'a self, other: &'b u8) -> &'b u8;
+    }
+
+    // missing lifetimes on the shims and trait impls
 }
 
 /// Example output of the `#[thin]` attribute

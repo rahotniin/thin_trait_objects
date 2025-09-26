@@ -142,16 +142,24 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #fn_name: #for_clause extern "C" fn (#(#arg_types),*) #return_type,
         };
 
+        let lifetimes = generics.lifetimes();
+
         let shim = quote! {
-            extern "C" fn #fn_name<T: #trait_name> (#(#arg_names: #arg_types),*) #return_type {
+            extern "C" fn #fn_name<#(#lifetimes,)* T: #trait_name> (#(#arg_names: #arg_types),*) #return_type {
                 // no references to the vtable should exist at this point
                 #un_erase_recv
                 T::#fn_name(#(#arg_names),*)
             }
         };
 
+        let mut lifetimes = generics.lifetimes();
+        let lifetimes: TokenStream2 = match lifetimes.next() {
+            Some(first) => quote! { <#first, #(#lifetimes),*> },
+            None => TokenStream2::new(),
+        };
+
         let trait_method_impl = quote! {
-            fn #fn_name(#(#args),*) #return_type {
+            fn #fn_name #lifetimes (#(#args),*) #return_type {
                 let shim = {
                     // SAFETY:
                     // see https://adventures.michaelfbryan.com/posts/ffi-safe-polymorphism-in-rust/?utm_source=user-forums&utm_medium=social&utm_campaign=thin-trait-objects#pointer-to-vtable--object
@@ -279,7 +287,7 @@ pub fn stable_any_derive(item: TokenStream) -> TokenStream {
     let mut path = Punctuated::<Ident, Token![::]>::new();
     path.push_value(item.ident);
 
-    let _impl = generate_impl(path, item.generics);
+    let _impl = generate_uuid_impl(path, item.generics);
 
     quote! {
         #_impl
@@ -339,7 +347,7 @@ pub fn impl_stable_any(input: TokenStream) -> TokenStream {
             where_clause: item.where_clause,
         };
 
-        impls.push(generate_impl(path, generics));
+        impls.push(generate_uuid_impl(path, generics));
     }
 
     quote! {
@@ -350,7 +358,7 @@ pub fn impl_stable_any(input: TokenStream) -> TokenStream {
 //=================//
 
 /// Generates implementations of `UUID` and `StableAny` for the type given by `path` with the given generics.
-fn generate_impl(ty: Punctuated<Ident, Token![::]>, generics: Generics) -> TokenStream2 {
+fn generate_uuid_impl(ty: Punctuated<Ident, Token![::]>, generics: Generics) -> TokenStream2 {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let type_params = &generics.type_params().map(
