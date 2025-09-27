@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Formatter};
+use std::marker::PhantomData;
 use crate::prelude::*;
 
 /// Module providing implementations of `UUID` for various foreign types.
@@ -20,7 +21,7 @@ impl StableTypeId {
         self.0
     }
 
-    pub const fn of<T: private::StableAny>() -> StableTypeId {
+    pub const fn of<T: StableAny>() -> StableTypeId {
         T::Inner::UUID
     }
 }
@@ -32,26 +33,24 @@ impl Debug for StableTypeId {
 }
 
 mod private {
-    use super::*;
-
-    pub unsafe trait StableAny {
-        type Inner: UUID + ?Sized;
-        fn stable_type_id(&self) -> StableTypeId;
-    }
-
-    unsafe impl<T: UUID> StableAny for T {
-        type Inner = T;
-        fn stable_type_id(&self) -> StableTypeId {
-            T::UUID
-        }
-    }
+    pub trait Sealed {}
 }
 
-pub trait StableAny: private::StableAny<Inner = ()> {
+pub trait StableAny: private::Sealed {
+    #[doc(hidden)]
+    type Inner: UUID + ?Sized where Self: Sized;
+    fn stable_type_id(&self) -> StableTypeId;
+}
+
+impl<T: UUID> private::Sealed for T {}
+impl<T: UUID> StableAny for T {
+    type Inner = T;
     fn stable_type_id(&self) -> StableTypeId {
-        <<Self as private::StableAny>::Inner as UUID>::UUID
+        T::UUID
     }
 }
+
+//================//
 
 macro_rules! impl_thin {
     ($trait: ty) => {
@@ -82,8 +81,9 @@ macro_rules! impl_thin {
                 }
             }
 
-            unsafe impl private::StableAny for Thin<$trait> {
-                type Inner = ();
+            impl private::Sealed for Thin<$trait> {}
+            impl StableAny for Thin<$trait> {
+                type Inner = $trait;
                 fn stable_type_id(&self) -> StableTypeId {
                     let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
                     vtable.uuid
@@ -111,7 +111,7 @@ macro_rules! impl_thin {
                 }
 
                 pub fn stable_is<T: UUID>(&self) -> bool {
-                    T::UUID == private::StableAny::stable_type_id(self)
+                    T::UUID == StableAny::stable_type_id(self)
                 }
 
                 pub fn downcast<T: UUID>(self) -> Option<T> {
@@ -146,6 +146,23 @@ impl_thin!(dyn StableAny);
 impl_thin!(dyn StableAny + Send);
 impl_thin!(dyn StableAny + Send + Sync);
 
+// the following UUIDs where randomly generated using
+// https://numbergenerator.org/random-16-digit-hex-codes-generator
+
+unsafe impl UUID for dyn StableAny {
+    const UUID: StableTypeId = StableTypeId(0xB3B4E57FBD6B8818u64);
+}
+
+unsafe impl UUID for dyn StableAny + Send {
+    const UUID: StableTypeId = StableTypeId(0x5B16BCA86ABA3C25u64);
+}
+
+unsafe impl UUID for dyn StableAny + Send + Sync {
+    const UUID: StableTypeId = StableTypeId(0xFDB2A76E12E2D8D8u64);
+}
+
+//================//
+
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
@@ -164,7 +181,30 @@ mod tests {
 
     #[test]
     fn compilation_independence() {
-        assert_eq!(StableTypeId::of::<TestStruct<u8>>(), unsafe { StableTypeId::new(7578435656508451722) });
+        // This should only fail when the crate's version
+        // or the path of this module are modified
+        assert_eq!(
+            StableTypeId::of::<TestStruct<u8>>(),
+            unsafe { StableTypeId::new(5403944710439342839) }
+        );
+    }
+
+    #[test]
+    fn thin_uuids() {
+        assert_eq!(
+            StableTypeId::of::<Thin<dyn StableAny>>(),
+            unsafe { StableTypeId::new(12949227165398566936) }
+        );
+
+        assert_eq!(
+            StableTypeId::of::<Thin<dyn StableAny + Send>>(),
+            unsafe { StableTypeId::new(6563640938470194213) }
+        );
+
+        assert_eq!(
+            StableTypeId::of::<Thin<dyn StableAny + Send + Sync>>(),
+            unsafe { StableTypeId::new(18280857928655362264) }
+        );
     }
 
     #[test]

@@ -369,10 +369,10 @@ fn generate_uuid_impl(ty: Punctuated<Ident, Token![::]>, generics: Generics) -> 
 
     let where_clause = match where_clause {
         Some(where_clause) => {
-            quote! { #where_clause, #(#type_params: UUID),* }
+            quote! { #where_clause, #(#type_params: StableAny),* }
         },
         None => {
-            quote! { where #(#type_params: UUID),* }
+            quote! { where #(#type_params: StableAny),* }
         },
     };
 
@@ -389,7 +389,7 @@ fn generate_uuid_impl(ty: Punctuated<Ident, Token![::]>, generics: Generics) -> 
                 hasher.write(module_path!().as_bytes());
                 hasher.write(#name_str.as_bytes());
                 unsafe { #(
-                    hasher.write_u64(#type_params::UUID.to_u64());
+                    hasher.write_u64(#type_params::Inner::UUID.to_u64());
                 )* }
                 #(
                     hasher.write(&(#const_params as u128).to_le_bytes());
