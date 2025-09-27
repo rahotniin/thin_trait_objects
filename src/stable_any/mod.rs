@@ -9,7 +9,7 @@ pub unsafe trait UUID {
     const UUID: StableTypeId;
 }
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone, Hash)]
 pub struct StableTypeId(u64);
 
 impl StableTypeId {
