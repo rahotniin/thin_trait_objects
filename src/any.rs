@@ -1,8 +1,8 @@
 use std::any::{Any, TypeId};
 use crate::prelude::*;
 
-macro_rules! impl_thin {
-    ($trait: ty) => {
+macro_rules! impl_thin_dyn_any {
+    ($($bounds: path),*) => {
         const _: () = {
             #[repr(C)]
             struct VTable {
@@ -21,7 +21,7 @@ macro_rules! impl_thin {
                 value: T,
             }
 
-            impl<K: 'static> ThinExt<$trait, K> for Thin<$trait> {
+            impl<K: Any $(+ $bounds)*> ThinExt<dyn Any $(+ $bounds)*, K> for Thin<dyn Any $(+ $bounds)*> {
                 fn new(value: K) -> Self {
                     let vtable = VTable { drop: drop::<K>, type_id: TypeId::of::<K>() };
                     let bundle = Bundle { vtable, value };
@@ -30,7 +30,11 @@ macro_rules! impl_thin {
                 }
             }
 
-            impl Thin<$trait> {
+            impl SpecialAssoc for dyn Any $(+ $bounds)* {
+                type Kind = Own;
+            }
+
+            impl Thin<dyn Any $(+ $bounds)*> {
                 unsafe fn downcast_unchecked<T>(self) -> T {
                     let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
                     ::std::mem::forget(self);
@@ -52,7 +56,7 @@ macro_rules! impl_thin {
 
                 pub fn is<T: 'static>(&self) -> bool {
                     let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
-                    TypeId::of::<T>() == vtable.type_id
+                    vtable.type_id == TypeId::of::<T>()
                 }
 
                 pub fn downcast<T: 'static>(self) -> Option<T> {
@@ -83,9 +87,9 @@ macro_rules! impl_thin {
     };
 }
 
-impl_thin!(dyn Any);
-impl_thin!(dyn Any + Send);
-impl_thin!(dyn Any + Send + Sync);
+impl_thin_dyn_any!();
+impl_thin_dyn_any!(Send);
+impl_thin_dyn_any!(Send, Sync);
 
 #[cfg(test)]
 #[allow(dead_code)]

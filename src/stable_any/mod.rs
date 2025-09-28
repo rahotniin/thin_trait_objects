@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use crate::prelude::*;
+use crate::{Own, SpecialAssoc};
 
 /// Module providing implementations of `UUID` for various foreign types.
 mod provided;
@@ -52,8 +53,8 @@ impl<T: UUID> StableAny for T {
 
 //================//
 
-macro_rules! impl_thin {
-    ($trait: ty) => {
+macro_rules! impl_thin_dyn_stable_any {
+    ($($bounds: path),*) => {
         const _: () = {
             #[repr(C)]
             struct VTable {
@@ -61,7 +62,7 @@ macro_rules! impl_thin {
                 uuid: StableTypeId,
             }
 
-            extern "C" fn drop<T: UUID>(ptr: *mut ()) {
+            extern "C" fn drop<T>(ptr: *mut ()) {
                 let bundle = ptr as *mut Bundle<T>;
                 let _ = unsafe { Box::from_raw(bundle) };
             }
@@ -72,7 +73,7 @@ macro_rules! impl_thin {
                 value: T,
             }
 
-            impl<K: UUID> ThinExt<$trait, K> for Thin<$trait> {
+            impl<K: StableAny $(+ $bounds)*> ThinExt<dyn StableAny $(+ $bounds)*, K> for Thin<dyn StableAny $(+ $bounds)*> {
                 fn new(value: K) -> Self {
                     let vtable = VTable { drop: drop::<K>, uuid: StableTypeId::of::<K>() };
                     let bundle = Bundle { vtable, value };
@@ -81,16 +82,20 @@ macro_rules! impl_thin {
                 }
             }
 
-            impl private::Sealed for Thin<$trait> {}
-            impl StableAny for Thin<$trait> {
-                type Inner = $trait;
+            impl SpecialAssoc for dyn StableAny $(+ $bounds)* {
+                type Kind = Own;
+            }
+
+            impl private::Sealed for Thin<dyn StableAny $(+ $bounds)*> {}
+            impl StableAny for Thin<dyn StableAny $(+ $bounds)*> {
+                type Inner = dyn StableAny $(+ $bounds)*;
                 fn stable_type_id(&self) -> StableTypeId {
                     let vtable = unsafe { &*(self.ptr.as_ptr() as *const VTable) };
                     vtable.uuid
                 }
             }
 
-            impl Thin<$trait> {
+            impl Thin<dyn StableAny $(+ $bounds)*> {
                 unsafe fn downcast_unchecked<T>(self) -> T {
                     let ptr = self.ptr.as_ptr() as *mut Bundle<T>;
                     ::std::mem::forget(self);
@@ -142,9 +147,9 @@ macro_rules! impl_thin {
     };
 }
 
-impl_thin!(dyn StableAny);
-impl_thin!(dyn StableAny + Send);
-impl_thin!(dyn StableAny + Send + Sync);
+impl_thin_dyn_stable_any!();
+impl_thin_dyn_stable_any!(Send);
+impl_thin_dyn_stable_any!(Send, Sync);
 
 // the following UUIDs where randomly generated using
 // https://numbergenerator.org/random-16-digit-hex-codes-generator
@@ -159,6 +164,10 @@ unsafe impl UUID for dyn StableAny + Send {
 
 unsafe impl UUID for dyn StableAny + Send + Sync {
     const UUID: StableTypeId = StableTypeId(0xFDB2A76E12E2D8D8u64);
+}
+
+impl SpecialAssoc for Thin<dyn StableAny> {
+    type Kind = Own;
 }
 
 //================//
@@ -181,11 +190,12 @@ mod tests {
 
     #[test]
     fn compilation_independence() {
-        // This should only fail when the crate's version
-        // or the path of this module are modified
+        // this will fail every time the crates version changes
+        // or the path of this module changes
+        // TODO: stop using the patch version in generating UUIDs
         assert_eq!(
             StableTypeId::of::<TestStruct<u8>>(),
-            unsafe { StableTypeId::new(5403944710439342839) }
+            unsafe { StableTypeId::new(109550671095340697) }
         );
     }
 

@@ -200,6 +200,10 @@ pub fn thin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 value: T
             }
 
+            impl SpecialAssoc for dyn #trait_name {
+                type Kind = Own;
+            }
+
             impl<K: #trait_name> ThinExt<dyn #trait_name, K> for Thin<dyn #trait_name> {
                 fn new(value: K) -> Self {
                     let vtable = VTable {

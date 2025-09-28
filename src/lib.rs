@@ -60,7 +60,9 @@
 //! - Methods with non-lifetime generics are not supported.
 
 use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
+use crate::prelude::StableAny;
 
 mod any;
 mod stable_any;
@@ -68,7 +70,10 @@ mod stable_any;
 pub mod prelude {
     pub use thin_trait_objects_macros::thin;
     pub use crate::{
-        Thin, ThinExt, RefSelf, MutSelf
+        Thin, //ThinRef, //ThinMut,
+        ThinExt,
+        RefSelf, MutSelf,
+        Own, Ref, Mut, SpecialAssoc
     };
 
     pub use thin_trait_objects_macros::{
@@ -81,16 +86,16 @@ pub mod prelude {
 }
 
 #[repr(transparent)]
-pub struct Thin<T: ?Sized> {
+pub struct Thin<T: ?Sized + SpecialAssoc> {
     // type-erased `*mut Bundle<K> where `K: F` and `T` is `dyn F`
     pub ptr: NonNull<()>,
     phantom: PhantomData<T>,
 }
 
-unsafe impl<T: ?Sized + Send> Send for Thin<T> {}
-unsafe impl<T: ?Sized + Sync> Sync for Thin<T> {}
+unsafe impl<T: ?Sized + SpecialAssoc + Send> Send for Thin<T> {}
+unsafe impl<T: ?Sized + SpecialAssoc + Sync> Sync for Thin<T> {}
 
-impl<T: ?Sized> Thin<T> {
+impl<T: ?Sized + SpecialAssoc + 'static> Thin<T> {
     #[doc(hidden)]
     pub unsafe fn from_raw(ptr: *mut ()) -> Thin<T> {
         Thin {
@@ -100,18 +105,122 @@ impl<T: ?Sized> Thin<T> {
     }
 }
 
-pub trait ThinExt<U: ?Sized, T> {
+pub trait ThinExt<U: ?Sized + SpecialAssoc +'static, T> {
     /// Creates a new `Thin<dyn _>` from the given value.
-    fn new(val: T) -> Self;
+    fn new(val: T) -> Thin<U>;
 }
 
-impl<T: ?Sized> Drop for Thin<T> {
-    fn drop(&mut self) {
+//========================//
+// impls to avoid double-indirection
+// `&Thin<_>` or `&mut Thin<_>`
+
+
+impl<T: ?Sized + SpecialAssoc + 'static> Thin<T> {
+    fn as_ref(&self) -> Thin<&T> {
+        Thin {
+            ptr: self.ptr,
+            phantom: PhantomData
+        }
+    }
+
+    fn as_mut(&mut self) -> Thin<&mut T> {
+        Thin {
+            ptr: self.ptr,
+            phantom: PhantomData
+        }
+    }
+}
+
+impl<T: ?Sized + SpecialAssoc + 'static> Thin<&T> {
+    fn copy(&self) -> Thin<&T> {
+        Thin {
+            ptr: self.ptr,
+            phantom: PhantomData
+        }
+    }
+}
+
+impl<T: ?Sized + SpecialAssoc + 'static> Deref for Thin<&T> {
+    type Target = Thin<T>;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(self as *const Thin<&T> as *const Thin<T>) }
+    }
+}
+
+impl<T: ?Sized + SpecialAssoc + 'static> Deref for Thin<&mut T> {
+    type Target = Thin<T>;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(self as *const Thin<&mut T> as *const Thin<T>) }
+    }
+}
+
+impl<T: ?Sized + SpecialAssoc + 'static> DerefMut for Thin<&mut T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *(self as *mut Thin<&mut T> as *mut Thin<T>) }
+    }
+}
+
+//========================//
+// dodgy hack for specialising the `Drop` impls of
+// `Thin<T>`, `Thin<&T>`, and `Thin<&mut T>`
+
+pub struct Own;
+pub struct Ref;
+pub struct Mut;
+
+pub trait SpecialAssoc: SpecialParam<Self::Kind> {
+    type Kind;
+}
+
+pub trait SpecialParam<K> {
+    fn drop(ptr: NonNull<()>);
+}
+
+// T
+
+/*
+// this must be manually implemented for each concrete type
+impl<T: ?Sized + 'static> SpecialAssoc for T {
+    type Kind = Own;
+}
+*/
+
+impl<T: ?Sized + SpecialAssoc + 'static> SpecialParam<Own> for T {
+    fn drop(ptr: NonNull<()>) {
         // SAFETY: `Bundle` and `VTable` are `#[repr(C)]`,
         // so the `drop` field of `VTable` will be positioned first in the memory layout of `Bundle`.
-        // see: https://adventures.michaelfbryan.com/posts/ffi-safe-polymorphism-in-rust/?utm_source=user-forums&utm_medium=social&utm_campaign=thin-trait-objects#pointer-to-vtable--object
-        let dropper: extern "C" fn(*mut ()) = unsafe { *self.ptr.as_ptr().cast() };
-        dropper(self.ptr.as_ptr());
+        let dropper: extern "C" fn(*mut ()) = unsafe { *ptr.as_ptr().cast() };
+        dropper(ptr.as_ptr());
+    }
+}
+
+// &T
+
+impl<T: ?Sized + SpecialAssoc + 'static> SpecialAssoc for &T {
+    type Kind = Ref;
+}
+impl<T: ?Sized + SpecialAssoc + 'static> SpecialParam<Ref> for &T {
+    fn drop(ptr: NonNull<()>) {
+        // we dont own the pointed-to value
+    }
+}
+
+// &mut T
+
+impl<T: ?Sized + SpecialAssoc + 'static> SpecialAssoc for &mut T {
+    type Kind = Mut;
+}
+impl<T: ?Sized + SpecialAssoc + 'static> SpecialParam<Mut> for &mut T {
+    fn drop(ptr: NonNull<()>) {
+        // we dont own the pointed-to value
+    }
+}
+
+// Drop
+
+impl<T: ?Sized + SpecialAssoc> Drop for Thin<T> {
+    fn drop(&mut self) {
+        <T as SpecialParam<<T as SpecialAssoc>::Kind>>::drop(self.ptr);
     }
 }
 
@@ -125,7 +234,7 @@ pub struct RefSelf<'a> {
 }
 
 impl<'a> RefSelf<'a> {
-    pub fn new<T: ?Sized>(thin: &'a Thin<T>) -> Self {
+    pub fn new<T: ?Sized + SpecialAssoc>(thin: &'a Thin<T>) -> Self {
         Self {
             ptr: thin.ptr.as_ptr(),
             marker: PhantomData,
@@ -140,7 +249,7 @@ pub struct MutSelf<'a> {
 }
 
 impl<'a> MutSelf<'a> {
-    pub fn new<T: ?Sized>(thin: &'a mut Thin<T>) -> MutSelf<'a> {
+    pub fn new<T: ?Sized + SpecialAssoc>(thin: &'a mut Thin<T>) -> MutSelf<'a> {
         MutSelf {
             ptr: thin.ptr.as_ptr(),
             marker: PhantomData,
@@ -196,7 +305,23 @@ mod tests {
         fn more_lifetimes<'a, 'b>(&'a self, other: &'b u8) -> &'b u8;
     }
 
-    // missing lifetimes on the shims and trait impls
+    #[test]
+    fn borrowing() {
+        let mut owned = Thin::<dyn Foo>::new(8u8);
+
+        let mut borrow_mut = owned.as_mut();
+        borrow_mut.add(1);
+        drop(borrow_mut);
+
+        let borrow = owned.as_ref();
+        let clone = borrow.copy();
+
+        let a = clone.get();
+        assert_eq!(*a, 9u8);
+
+        let b = borrow.get();
+        assert_eq!(*b, 9u8);
+    }
 }
 
 /// Example output of the `#[thin]` attribute
@@ -236,6 +361,7 @@ mod example_macro_expansion {
             vtable: VTable,
             value: T,
         }
+        impl SpecialAssoc for dyn Foo { type Kind = Own; }
         impl<K: Foo> ThinExt<dyn Foo, K> for Thin<dyn Foo> {
             fn new(value: K) -> Self {
                 let vtable = VTable { drop: drop::<K>, add: add::<K>, get: get::<K> };

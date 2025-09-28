@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use crate::prelude::*;
 
 // TODO: more standard types
@@ -5,4 +6,5 @@ use crate::prelude::*;
 impl_stable_any! {
     Option<T>;
     Result<T, E>;
+    Rc<T>
 }
